@@ -1,0 +1,14 @@
+# Environment-specific / sensitive lab docs — keep out of version control
+docs/vcenter-least-privilege.md
+src/handoff.md
+
+# Target VM identifier (infra-specific) — read at runtime, never commit
+vm-uuid.txt
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+
+# LUCENT run outputs
+trials/
+runs.jsonl
