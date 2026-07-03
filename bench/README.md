@@ -5,7 +5,7 @@ Turns the oracle from *designed* into *demonstrated*. Everything here runs
 `reached_sink` detector against a target whose answer we already know, before
 trusting the loop on top of it (one axis at a time).
 
-**Fixture: the stack-overflow baseline.** We compile `m2/vuln.c` — a 16-byte
+**Fixture: the stack-overflow baseline.** We compile `bench/vuln.c` — a 16-byte
 stack buffer + unbounded `strcpy`, **vendored** from the Bug Museum
 `0_stack-overflow/variant-01-strcpy/src.c` so the build is self-contained on the
 target VM (which has no BugMuseum checkout) — into `vuln.exe`. The **payload is
@@ -52,10 +52,10 @@ before running.
 
 ```bat
 :: 1) build the fixture (plain cmd prompt is fine — build.bat sets up vcvars64)
-m2\build.bat
+bench\build.bat
 
 :: 2) verify
-python m2\verify_oracle.py
+python bench\verify_oracle.py
 ```
 
 The harness passes the payloads as command-line **arguments** — `"A"*64` (crash)

@@ -8,7 +8,7 @@ time). The cdb/TTD command strings this drives are the ones still marked
 "unverified" in the code — this run is what verifies them.
 
 FIXTURE: the stack-overflow baseline (Bug Museum variant-01-strcpy), built by
-m2/build.bat as vuln.exe (+ vuln.pdb) with /Od /GS-. The bug is a 16-byte stack
+bench/build.bat as vuln.exe (+ vuln.pdb) with /Od /GS-. The bug is a 16-byte stack
 buffer + unbounded strcpy; the PAYLOAD IS THE COMMAND-LINE ARGUMENT (argv[1]),
 not a file. A long-enough arg overwrites the saved return address, so the `ret`
 faults with an access violation the oracle's `sxe av` catches.
@@ -25,7 +25,7 @@ Layers:
 Run from an ELEVATED shell if recording TTD — tttracer needs admin.
 
 Usage:
-    python m2\\verify_oracle.py
+    python bench\\verify_oracle.py
 """
 import ctypes
 import os
@@ -48,15 +48,26 @@ except ModuleNotFoundError:
 
 
 # --- What to test (edit to match your fixture) -------------------------------
+# LUCENT_IMAGE selects the build: default vuln.exe (/Od /GS-, return-address AV);
+# set LUCENT_IMAGE=vuln_gs.exe for the /Od /GS cookie build (fail-fast). The
+# crash SIGNAL differs by build — the oracle handles both:
+#   vuln.exe     -> crashed=True, exception_code c0000005, av_type read_av
+#   vuln_gs.exe  -> crashed=True, exception_code c0000409, av_type stack_buffer_overrun
 SANDBOX     = config.SANDBOX_DIR
-TARGET_EXE  = os.path.join(SANDBOX, "vuln.exe")
-IMAGE_NAME  = "vuln.exe"
-SINK_SYMBOL = "vuln!vuln"           # needs vuln.pdb (build.bat emits /Zi)
+IMAGE_NAME  = os.environ.get("LUCENT_IMAGE", "vuln.exe")
+TARGET_EXE  = os.path.join(SANDBOX, IMAGE_NAME)
+SINK_SYMBOL = f"{os.path.splitext(IMAGE_NAME)[0]}!vuln"   # vuln!vuln / vuln_gs!vuln
 
-# Substring of the !analyze BUCKET_ID you expect for the known bug. LEAVE None on
-# the first run: the harness prints the REAL bucket_id — copy the stable part
-# back here, then rerun to exercise the identity check (matches_expected_bug).
-EXPECTED_SIG = None
+# Substring of the !analyze BUCKET_ID that identifies the known bug. Captured
+# 2026-07-03 (LUCENT_ANALYZE=1 run): the full bucket was
+#   INVALID_POINTER_READ_AVRF_c0000005_vuln.exe!vuln
+# We key on the STABLE core "c0000005_vuln.exe!vuln" (exception code + the sink
+# module!function) and intentionally drop the leading tokens: "AVRF" only appears
+# while App Verifier / page heap is armed on the image, and "INVALID_POINTER_READ"
+# is a classifier label — both can shift, but a c0000005 fault in vuln!vuln is the
+# bug. NOTE: this is the /Od /GS- build's signature; the /GS build (vuln_gs.exe)
+# fail-fasts with c0000409 and needs its own EXPECTED_SIG.
+EXPECTED_SIG = "c0000005_vuln.exe!vuln"
 
 # The payload IS the command-line argument (argv[1]). buf is 16 bytes; 64 'A's
 # blow well past the saved return address (no NUL so strcpy copies it all). 8
@@ -141,13 +152,18 @@ def confusion(results):
 
 def main():
     record_ttd = "--no-ttd" not in sys.argv
+    analyze = bool(os.environ.get("LUCENT_ANALYZE"))
     print(f"[info] package `{PKG}` | sandbox {SANDBOX} | expected_sig {EXPECTED_SIG!r}"
-          f" | ttd={'on' if record_ttd else 'off'}")
+          f" | ttd={'on' if record_ttd else 'off'} | analyze={'on' if analyze else 'off'}")
+    if analyze and record_ttd:
+        print("[info] TIP: for BUCKET_ID, add --no-ttd — the live cdb path is the "
+              "verified one; the TTD record->replay leg is still bring-up and will "
+              "report crashed=False here.")
     if not record_ttd:
         print("[info] --no-ttd: cdb live-launch only (no tttracer windows, no admin;"
               " reached_sink will be None).")
     if not preflight():
-        print("\n[abort] preflight failed - build the fixture first (m2\\build.bat).")
+        print("\n[abort] preflight failed - build the fixture first (bench\\build.bat).")
         return
     results = [run_case(*c, record_ttd=record_ttd) for c in CASES]
     confusion(results)

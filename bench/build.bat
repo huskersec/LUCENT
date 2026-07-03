@@ -1,7 +1,7 @@
 @echo off
 REM LUCENT M2 fixture build - the stack-overflow baseline.
 REM
-REM Compiles the VENDORED stack-overflow fixture (m2\vuln.c: a 16-byte stack
+REM Compiles the VENDORED stack-overflow fixture (bench\vuln.c: a 16-byte stack
 REM buffer + unbounded strcpy) into vuln.exe + vuln.pdb in the sandbox. The
 REM source is vendored INTO this repo (from BugMuseum) so the build works on the
 REM target VM, which does NOT have BugMuseum checked out. Pass a path as arg 1 to
@@ -52,21 +52,46 @@ if defined VSPATH (
 
 where cl >nul 2>nul || ( echo [build] ERROR: cl.exe not on PATH. & exit /b 1 )
 
-REM Clear any prior outputs FIRST, so a failed build cannot leave a stale/garbage
-REM vuln.exe behind for verify_oracle.py to run (that shows up as "unsupported
-REM 16-bit application" / not-a-PE). After this, vuln.exe existing == build OK.
-del /q "%OUT%\vuln.exe" "%OUT%\vuln.obj" "%OUT%\vuln.pdb" 2>nul
+REM --- Build config -----------------------------------------------------------
+REM   default          -> /Od /GS-  (no cookie): overflow overwrites the return
+REM                       address, `ret` faults with an ACCESS VIOLATION.  vuln.exe
+REM   LUCENT_BUILD=gs  -> /Od /GS   (stack cookie): overflow trips __security_check
+REM                       _cookie, which __fastfails with STATUS_STACK_BUFFER_OVERRUN
+REM                       (0xc0000409) BEFORE `ret` - a crash with NO hijack.  vuln_gs.exe
+REM   (Uses /Od, not /O2, on purpose: at /O2 the optimizer can dead-code-eliminate
+REM    this trivial buf/strcpy so it never overflows. /Od guarantees the overrun,
+REM    and the /GS cookie is inserted regardless of opt level.)
+REM Both keep /Zi so cdb resolves <module>!vuln.
+set "CFLAGS=/Zi /Od /GS-"
+set "EXE=vuln.exe"
+set "OBJ=vuln.obj"
+set "PDB=vuln.pdb"
+set "DESC=/Od /GS-  no cookie, return-address AV"
+if /i "!LUCENT_BUILD!"=="gs" (
+    set "CFLAGS=/Zi /Od /GS"
+    set "EXE=vuln_gs.exe"
+    set "OBJ=vuln_gs.obj"
+    set "PDB=vuln_gs.pdb"
+    set "DESC=/Od /GS  stack cookie, fail-fast on overflow"
+)
+echo [build] config: !DESC!
 
-cl /nologo /Zi /Od /GS- "!SRC!" ^
-   /Fe:"%OUT%\vuln.exe" /Fo:"%OUT%\vuln.obj" /Fd:"%OUT%\vuln.pdb" ^
+REM Clear prior outputs FIRST, so a failed build cannot leave a stale/garbage exe
+REM behind for verify_oracle.py to run (that shows up as "unsupported 16-bit
+REM application" / not-a-PE). After this, the exe existing == build OK.
+del /q "%OUT%\!EXE!" "%OUT%\!OBJ!" "%OUT%\!PDB!" 2>nul
+
+cl /nologo !CFLAGS! "!SRC!" ^
+   /Fe:"%OUT%\!EXE!" /Fo:"%OUT%\!OBJ!" /Fd:"%OUT%\!PDB!" ^
    /link /DEBUG
 if errorlevel 1 ( echo. & echo [build] FAILED - see cl output above. & exit /b 1 )
-if not exist "%OUT%\vuln.exe" ( echo. & echo [build] FAILED - no vuln.exe produced. & exit /b 1 )
+if not exist "%OUT%\!EXE!" ( echo. & echo [build] FAILED - no !EXE! produced. & exit /b 1 )
 
 REM --- Self-report the produced architecture (the decisive sanity check) -----
 echo.
-python "%~dp0archcheck.py" "%OUT%\vuln.exe"
+python "%~dp0archcheck.py" "%OUT%\!EXE!"
 echo.
-echo [build] OK: %OUT%\vuln.exe  (plus vuln.pdb)
-echo [build] next: run  python m2\diag.py  in an ELEVATED shell
+echo [build] OK: %OUT%\!EXE!  (plus !PDB!)
+echo [build] next: python bench\verify_oracle.py --no-ttd
+echo [build]       (for the /GS build: set LUCENT_IMAGE=!EXE! first)
 endlocal

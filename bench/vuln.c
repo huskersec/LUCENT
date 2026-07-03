@@ -11,7 +11,7 @@
  * Self-authored / museum-sourced == CONTAMINATED: proves the oracle PLUMBING,
  * not discovery capability. Tag any Task built on it contaminated=True.
  *
- * Build: m2/build.bat  ->  cl /Zi /Od /GS-  ->  vuln.exe + vuln.pdb
+ * Build: bench/build.bat  ->  cl /Zi /Od /GS-  ->  vuln.exe + vuln.pdb
  *   /GS-  no stack cookie: the overflow overwrites the saved return address, so
  *         `ret` faults with an ACCESS VIOLATION the oracle's `sxe av` catches.
  * The payload is argv[1] (a string), NOT a file. No page heap (stack, not heap).

@@ -8,7 +8,13 @@
 
 ## ⏱ Current status — 2026-07-03 · READ THIS FIRST
 
-**Active milestone:** **M2** (hard oracle wired & verified) — ✅ *LOCAL oracle DEMONSTRATED on the stack fixture (2026-07-03). `verify_oracle.py --no-ttd` returns **RESULT: PASS** (crash-64A crashed=True / c0000005 / read_av / fault 0xffffffffffffffff; clean-8A crashed=False; FP=0 FN=0).* Ready to bake the `golden` snapshot.
+**Milestones green:** **M2** oracle ✅ (`verify_oracle.py --no-ttd` → PASS, FP=0/FN=0; identity check live) **and M1** agent loop ✅ (2026-07-03 — `run_agent_smoke.py` drove a full reach→submit→verdict trajectory on `vuln.exe`; the loop closes end-to-end). Both M2 oracle-rigor closeouts landed. Ready to bake the `golden` snapshot.
+
+**M2 rigor closeouts — status:**
+- **(a) Bucket identity ✅ (2026-07-03).** Captured the real bucket via `LUCENT_ANALYZE=1 … --no-ttd`: `INVALID_POINTER_READ_AVRF_c0000005_vuln.exe!vuln`. Set `EXPECTED_SIG = "c0000005_vuln.exe!vuln"` (the stable core — dropped `AVRF`, which only appears while page heap/App Verifier is armed, and the `INVALID_POINTER_READ` classifier label). `matches_expected_bug` now confirms "hit *this* bug," not just "a crash." Bucket only populates on the opt-in `LUCENT_ANALYZE` pass (needs symbols); the default fast path is symbol-free by design.
+- **(b) `/GS` fail-fast handling ✅ VM-VERIFIED (2026-07-03).** `vuln_gs.exe` (`LUCENT_BUILD=gs` → `/Od /GS`) run via `LUCENT_IMAGE=vuln_gs.exe --no-ttd` returned **RESULT: PASS** — crash-64A `crashed=True / c0000409 / av_type=stack_buffer_overrun / rip_controlled=False`, clean-8A `crashed=False`. `sxe c0000409` caught the `__fastfail` first-chance (no timeout), so the first-vs-second-chance caveat is resolved. Bucket: `FAIL_FAST_STACK_BUFFER_OVERRUN_..._GS_POSITIVE_c0000409_vuln_gs.exe!vuln`. The oracle now cleanly distinguishes the two stack-crash signatures (cookie-caught fail-fast vs return-address AV). (`matches_expected_bug=False` here is correct — `EXPECTED_SIG` pins the `/GS-` `c0000005` bug, not this one.)
+
+**Next block (pick up here):** **M3 — the MCP tool layer** (the defensible floor). Plan it, then build the first piece (candidate: the ghidriff patch-diff server, since patch-diffing *is* the thesis). Deferred: TTD `reached_sink` leg, `trial.py` file→argv retarget, host→guest sync workflow, `/GS` VM verification.
 
 **2026-07-03 — M2 local oracle green after a run of infrastructure bugs (all fixed in code; not oracle-logic bugs).** The crash verdict on `vuln.exe` (stack overflow, argv payload, return-address hijack → non-canonical `ret`, reported as `c0000005` read-AV at `0xffffffffffffffff`) now classifies crash-vs-clean with zero errors. The fixes, in the order they were peeled back:
 1. **`build.bat` self-clobber** — the final `echo [build] OK -> %OUT%\vuln.exe` had `->`, which cmd read as a redirect that overwrote the freshly-linked exe with the status text ("not a valid PE" / "unsupported 16-bit application"). This also explains the *old* `target.exe` "not a PE" saga — same `->` bug, misattributed to arch/toolchain. Now hardened (clears prior outputs, fails loudly, no `->`).
@@ -22,7 +28,7 @@
 
 **Restart context (2026-07-02):** Reapproached M2 against a simpler fixture after a tooling mix-up (Dispatch vs Code) muddied the heap-fixture work.
 
-**🔀 PIVOT — new baseline is a STACK overflow, not the heap fixture.** We are reapproaching M2 against an *easier, more legible* bug and climbing a ladder from there. The old self-authored heap fixture (`m2/target.c`, 64B `malloc` + `memcpy`, file input, Full Page Heap, `parse_record`) is retired. The new baseline is the **Bug Museum `0_stack-overflow/variant-01-strcpy/src.c`** (16-byte stack buffer + unbounded `strcpy`), built by LUCENT as **`vuln.exe` + `vuln.pdb`** with `/Zi /Od /GS-`.
+**🔀 PIVOT — new baseline is a STACK overflow, not the heap fixture.** We are reapproaching M2 against an *easier, more legible* bug and climbing a ladder from there. The old self-authored heap fixture (`bench/target.c`, 64B `malloc` + `memcpy`, file input, Full Page Heap, `parse_record`) is retired. The new baseline is the **Bug Museum `0_stack-overflow/variant-01-strcpy/src.c`** (16-byte stack buffer + unbounded `strcpy`), built by LUCENT as **`vuln.exe` + `vuln.pdb`** with `/Zi /Od /GS-`.
 
 Three things this changes about the oracle (all now reflected in code):
 1. **Input is the command-line argument (`argv[1]`), not a file.** No more `trigger.bin`/`clean.bin`; the payload is a string (`"A"*64` crash / `"A"*8` clean).
@@ -32,19 +38,19 @@ Three things this changes about the oracle (all now reflected in code):
 **🪜 The ladder (work our way up, one axis at a time):**
 `vuln.exe /Od /GS-` (return-address AV — **here now**) → `/O2 /GS-` (same bug, optimized; buffer may DCE) → `/O2 /GS` (stack cookie → `STATUS_STACK_BUFFER_OVERRUN` fail-fast, *not* an AV — needs a new catch) → heap-overflow / UAF / double-free museum variants (page heap comes back on).
 
-**🎯 Scope of this pass — LOCAL-FIRST.** Retarget only the `m2/` kit + `src/oracle.py` and prove a real AV verdict on `vuln.exe` in the VM. The **vSphere remote-trial path (`src/trial.py`, `docs/M2-runbook.md`) is deferred** and still points at the old heap fixture (runbook now carries a banner saying so). `src/vsphere_target.py` is target-agnostic and untouched.
+**🎯 Scope of this pass — LOCAL-FIRST.** Retarget only the `bench/` kit + `src/oracle.py` and prove a real AV verdict on `vuln.exe` in the VM. The **vSphere remote-trial path (`src/trial.py`, `docs/M2-runbook.md`) is deferred** and still points at the old heap fixture (runbook now carries a banner saying so). `src/vsphere_target.py` is target-agnostic and untouched.
 
 **✅ Done this pass (code retargeted; UNVERIFIED against live cdb/TTD):**
-- `m2/build.bat` → compiles the museum `src.c` to `vuln.exe`+`vuln.pdb` (`/Zi /Od /GS-`, x64-forced).
+- `bench/build.bat` → compiles the museum `src.c` to `vuln.exe`+`vuln.pdb` (`/Zi /Od /GS-`, x64-forced).
 - `src/oracle.py` → `page_heap` toggle (off for stack); page-heap calls gated; `fault_address`/`av_type` comments now cover the stack case.
-- `m2/verify_oracle.py` → arg payloads, `vuln!vuln` sink, guard-page write-calibration removed, confusion matrix kept.
-- `m2/diag.py` → page heap dropped, phase-1 retargeted to the return-address AV.
-- `m2/archcheck.py`, `m2/README.md`, `setup-vm.ps1` (page-heap step reframed as heap-class pre-arm on `vuln.exe`), `src/handoff.md`, `src/scoring.py`, `src/agent.py` → retargeted / annotated.
-- Deleted `m2/target.c` and stale `__pycache__/`.
+- `bench/verify_oracle.py` → arg payloads, `vuln!vuln` sink, guard-page write-calibration removed, confusion matrix kept.
+- `bench/diag.py` → page heap dropped, phase-1 retargeted to the return-address AV.
+- `bench/archcheck.py`, `bench/README.md`, `setup-vm.ps1` (page-heap step reframed as heap-class pre-arm on `vuln.exe`), `src/handoff.md`, `src/scoring.py`, `src/agent.py` → retargeted / annotated.
+- Deleted `bench/target.c` and stale `__pycache__/`.
 
 **⏭ Next actions (in order):**
-1. In the VM: `m2\build.bat` → confirm `archcheck` prints `machine: 0x8664 / PE32+`, and `vuln.exe`+`vuln.pdb` land in the sandbox.
-2. `python m2\verify_oracle.py` → expect **crash-64A `crashed=True`** (AV, `exception_code c0000005`, `fault_address` ≈ `0x4141414141414141`), **clean-8A `crashed=False`**, confusion matrix **PASS**.
+1. In the VM: `bench\build.bat` → confirm `archcheck` prints `machine: 0x8664 / PE32+`, and `vuln.exe`+`vuln.pdb` land in the sandbox.
+2. `python bench\verify_oracle.py` → expect **crash-64A `crashed=True`** (AV, `exception_code c0000005`, `fault_address` ≈ `0x4141414141414141`), **clean-8A `crashed=False`**, confusion matrix **PASS**.
 3. Capture the real `!analyze BUCKET_ID` → set `EXPECTED_SIG` → rerun for `matches_expected_bug=True`.
 4. Confirm the return-address AV's `av_type` classification (may be exec-AV or `None`) and tune `_parse_verdict` to the *real* cdb message — do not fudge the fixture.
 5. Elevated: exercise the TTD record→replay leg so `reached_sink` returns ≥1.
@@ -80,29 +86,33 @@ Priority order when time is tight:
 ## Milestone ladder
 
 ### M1 — Loop closes, one tool wired
-**Target: Weeks 1–2** · **Status: ☐ Not started**
+**Target: Weeks 1–2** · **Status: ✅ DONE (2026-07-03) — agent loop demonstrated end-to-end on the stack fixture**
 
-- [ ] ReAct skeleton on the Anthropic SDK
-- [ ] Single tool dispatched end-to-end (start with GhidraMCP or the oracle path)
-- [ ] Run against the bug museum (contaminated — plumbing only, NOT a capability claim)
-- [ ] **Artifact:** trajectory log showing the loop call a tool and act on structured output
+- [x] ReAct skeleton on the Anthropic SDK *(agent.py; model `claude-sonnet-5`, adaptive thinking)*
+- [x] Single tool dispatched end-to-end — the `run` shell tool AND the `submit_finding` → oracle path
+- [x] Run against the bug museum (`vuln.exe`, contaminated — plumbing only, NOT a capability claim)
+- [x] **Artifact:** `agent_trajectory.txt` — the loop calls `run`, reads the exit code, submits, and acts on the oracle's structured verdict
 
 *Goal: prove the orchestration closes before trusting it with anything.*
 
 **Notes / blockers:**
-_(update here)_
+- **2026-07-03 — GREEN.** `bench/run_agent_smoke.py` drove one trajectory (`record_ttd=False`): the agent ran a baseline arg (rc 0) and a long arg (rc 3221225477 = 0xC0000005), submitted the 200-byte payload, and the oracle confirmed `crashed=True / c0000005 / read_av / fault 0xffffffffffffffff`. The agent correctly read the non-canonical fault as a return-address hijack.
+- **Two harness gaps this run exposed and fixed (both real, both in `agent.py`):** (a) the `run` tool now returns the process **exit code** — a crashing target emits no stdout, so the exit code (e.g. -1073741819) was the only observable crash signal; without it the agent was blind and rabbit-holed on static analysis. (b) The tool description now states it's **single-line Windows cmd.exe** — multi-line `python -c "\n…"` / heredocs silently no-op under `cmd /c`, which had wrecked the first attempt.
+- **Contamination:** this is Phase-0 plumbing on a known/self-authored target — it validates the loop, NOT discovery capability. Tag any Task built on it `contaminated=True`.
+- **Also validated:** parallel tool use (two `run` calls in one turn), `record_ttd` threading (fast symbol-free verdict), and `ast.literal_eval` verdict capture.
 
 ---
 
 ### M2 — Hard oracle wired and verified ★ highest-leverage piece
-**Target: Weeks 2–3** · **Status: ✅ Local oracle DEMONSTRATED (2026-07-03) — crash/clean verdict PASS on the stack fixture. Remaining: BUCKET_ID/`EXPECTED_SIG` + the TTD `reached_sink` leg. (see ⏱ Current status up top)**
+**Target: Weeks 2–3** · **Status: ✅ Local oracle DEMONSTRATED + both rigor closeouts VM-VERIFIED (2026-07-03). Crash/clean PASS, identity check live, both stack-crash signatures (`/GS-` AV + `/GS` fail-fast) classified. Remaining: TTD `reached_sink` leg only (deferred). (see ⏱ Current status up top)**
 
-- [x] cdb (+ optional page heap for heap-class) producing a binary crash verdict — **stack baseline: return-address AV via `sxe av`, `page_heap=False`** *(2026-07-03)*
-- [ ] `!analyze` bucket comparison integrated (`EXPECTED_SIG` set from the real `BUCKET_ID`) — pending one `LUCENT_ANALYZE=1` run with the symbol server reachable
+- [x] cdb producing a binary crash verdict — **stack baseline: return-address AV via `sxe av`, `page_heap=False`** *(2026-07-03)*
+- [x] `!analyze` bucket comparison integrated — `EXPECTED_SIG = "c0000005_vuln.exe!vuln"` from the real bucket `INVALID_POINTER_READ_AVRF_c0000005_vuln.exe!vuln`; `matches_expected_bug` works on the `LUCENT_ANALYZE` pass *(2026-07-03)*
 - [x] Verified against known ground truth: crash-64A (crash) + clean-8A (clean) *(2026-07-03)*
 - [x] Confirm correct classification with **zero false positives** *(FP=0, FN=0, 2026-07-03)*
 - [x] **Artifact:** confusion-matrix-style verdict table on known inputs *(verify_oracle.py `RESULT: PASS`)*
-- [ ] TTD record→replay leg green so `reached_sink("vuln!vuln")` ≥ 1
+- [x] Oracle generalizes past one crash shape — `/GS` cookie fail-fast (`c0000409` → `stack_buffer_overrun`) handled via `sxe c0000409` *(VM-verified PASS, 2026-07-03)*
+- [ ] TTD record→replay leg green so `reached_sink("vuln!vuln")` ≥ 1 *(deferred)*
 
 *Goal: this is the closed-source analog of source+ASan. Every downstream capability claim rests on this oracle being trustworthy. An untrustworthy oracle invalidates everything above it — and an interviewer will find that crack in ~two questions.*
 
@@ -113,7 +123,7 @@ _(update here)_
 - **Still open (NOT blocking the milestone):**
   1. **EXPECTED_SIG / bucket identity.** One `LUCENT_ANALYZE=1` run with the symbol server reachable → capture the real `BUCKET_ID` → set `EXPECTED_SIG` so `matches_expected_bug` works (turns "did it crash" into "did it hit *this* bug").
   2. **TTD `reached_sink` leg.** record (`tttracer`) → replay (`cdb -z`) → `dx @$cursession.TTD.Calls(...)` is still UNVERIFIED against real output (see `ttd.py` header). `verify_oracle.py` *without* `--no-ttd` exercises it — expect bring-up work; not a snapshot blocker.
-  3. **Two overlapping harnesses** — `m2/verify_oracle.py` (local) vs `src/trial.py` (remote). Same cdb-script/verdict logic; consolidate the shared bits so they can't drift. `trial.py` also still needs the file→`argv` input retarget (runbook §5).
+  3. **Two overlapping harnesses** — `bench/verify_oracle.py` (local) vs `src/trial.py` (remote). Same cdb-script/verdict logic; consolidate the shared bits so they can't drift. `trial.py` also still needs the file→`argv` input retarget (runbook §5).
 - **Bug classes found during bring-up, now swept across ALL cdb-driving code** (`oracle.py`, `ttd.py`, `diag.py`, `trial.py`): (a) `subprocess` **pipe deadlock** on crash → capture cdb to a FILE + `stdin=DEVNULL`; (b) **`.sympath` swallowing the script** → symbol path via the `-y` flag; (c) **`kb`/`!analyze` symbol-server stalls** → opt-in `LUCENT_ANALYZE`, default verdict from `.exr -1`; (d) `build.bat` `->` self-clobber. New env knobs: `LUCENT_ORACLE_TIMEOUT`, `LUCENT_SYMPATH`, `LUCENT_DEBUG`, `LUCENT_ANALYZE`.
 - **Resolved:** the clean-run `=== FAULT ===` fragility is gone — cdb ends the session at clean process-exit *before* the post-`g` echo runs, and `crashed` also requires `ExceptionAddress`, so a clean run cannot be misread as a crash.
 

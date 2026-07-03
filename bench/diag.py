@@ -6,7 +6,7 @@ When verify_oracle.py reports something unexpected (crashed=False, or no TTD
 trace found), this decouples the unknowns and prints raw evidence so we're not
 blind to what cdb/tttracer actually saw. Run from an ELEVATED shell in the VM:
 
-    python m2\\diag.py
+    python bench\\diag.py
 
 FIXTURE: vuln.exe (stack overflow, /Od /GS-). The PAYLOAD IS argv[1] — a long
 string overruns the 16-byte buffer and clobbers the saved return address, so

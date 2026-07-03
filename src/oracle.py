@@ -15,7 +15,9 @@ The crash SIGNAL is bug-class dependent, and page heap is a per-target toggle:
     `ret` faults with an ACCESS VIOLATION at the controlled address. `sxe av`
     catches it; page heap is IRRELEVANT (it instruments the heap). page_heap=False.
   * stack overflow, cookie (/GS)      -> __fastfail STATUS_STACK_BUFFER_OVERRUN
-    (0xc0000409) BEFORE ret — NOT an AV; `sxe av` misses it (a later rung).
+    (0xc0000409) BEFORE ret — NOT an AV, so the script also arms `sxe c0000409`
+    to break on it. The cookie PREVENTS the control transfer, so this is a crash
+    WITHOUT a hijack: av_type="stack_buffer_overrun", rip_controlled=False.
   * heap overflow / UAF / double-free -> turn page_heap=True so the bad access
     faults AT the guard page (the write_av-at-boundary signal), not silently later.
 
@@ -99,7 +101,8 @@ def verify_finding(args: dict, expected_sig: str | None = None,
     # symbol-path ELEMENTS, not commands), so sxe/g/.exr never run and the crash
     # is missed. Keeping it out of the script keeps `;` meaning "next command".
     dbg_script = (
-        "sxe av; "                       # break on first-chance AV
+        "sxe av; "                       # break on first-chance AV (/GS- return-addr overwrite)
+        "sxe c0000409; "                 # break on the /GS __fastfail (STATUS_STACK_BUFFER_OVERRUN)
         "g; "                            # run forward to the fault
         ".echo === FAULT ===; "
         ".exr -1; "                      # exception record: code/addr/access, symbol-free
@@ -204,6 +207,12 @@ def _parse_verdict(out: str, expected_sig: str | None, ttd_trace: str | None) ->
         av_type = "read_av"
     elif "Attempt to execute" in out:
         av_type = "exec_av"
+    elif (exc_code or "").lower().replace("0x", "") == "c0000409":
+        # /GS stack-cookie __fastfail — a fatal exception, NOT an access
+        # violation. The cookie caught the overflow before the saved return
+        # address could be used, so this is a crash WITHOUT a control transfer
+        # (rip_controlled stays False below — that is exactly what /GS buys).
+        av_type = "stack_buffer_overrun"
 
     # Faulting target address. Its MEANING depends on the bug class:
     #   * heap overflow under Full Page Heap -> the corruption site (the overrun

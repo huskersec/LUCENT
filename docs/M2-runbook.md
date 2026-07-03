@@ -1,7 +1,7 @@
 # M2 — In-VM oracle runbook
 
 > **Status (2026-07-03).** The **local in-VM oracle is DEMONSTRATED** on the
-> stack fixture: `m2\build.bat` + `python m2\verify_oracle.py --no-ttd` returns
+> stack fixture: `bench\build.bat` + `python bench\verify_oracle.py --no-ttd` returns
 > `RESULT: PASS` (crash vs clean, zero FP/FN). That is the M2 bar and it is met.
 >
 > The **vSphere remote-trial** path (`src/trial.py`, §2–§5 below) is built and its
@@ -11,7 +11,7 @@
 > one retarget before the remote trial runs end-to-end. Until then, §1 (local) is
 > the authoritative M2 procedure.
 
-Fixture: the stack-overflow baseline — `m2/vuln.c` (16-byte buffer + unbounded
+Fixture: the stack-overflow baseline — `bench/vuln.c` (16-byte buffer + unbounded
 `strcpy`) built to `vuln.exe` (+`vuln.pdb`). The payload is the command-line
 **argument**; a long-enough arg overwrites the saved return address and the `ret`
 faults with an access violation (`c0000005`). **No page heap** — that instruments
@@ -31,7 +31,7 @@ Do this once, inside the disposable target Windows VM:
    variants). Re-run it in a **fresh** elevated shell if any probe shows FAIL
    (winget PATH changes need a new session; that's what makes `pip install` land).
 
-2. **Build the fixture.** Run `m2\build.bat` (it self-invokes `vcvars64`, so a
+2. **Build the fixture.** Run `bench\build.bat` (it self-invokes `vcvars64`, so a
    plain prompt works). Produces `vuln.exe` + `vuln.pdb` in `C:\lucent\sandbox`
    and self-reports the PE machine type via `archcheck.py` (expect
    `0x8664 / PE32+`). The build clears prior outputs first, so `vuln.exe`
@@ -39,7 +39,7 @@ Do this once, inside the disposable target Windows VM:
 
 3. **Validate the oracle locally.** This is the M2 verification:
    ```powershell
-   python -u m2\verify_oracle.py --no-ttd
+   python -u bench\verify_oracle.py --no-ttd
    ```
    Expect **crash-64A** `crashed=True` (`c0000005`, `av_type read_av`,
    `fault_address 0xffffffffffffffff` — the non-canonical-jump signature of the

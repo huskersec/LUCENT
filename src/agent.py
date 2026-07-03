@@ -13,6 +13,7 @@ for the open-source learning phase, then your MCP-backed Windows stack
 itself never changes.
 """
 
+import ast
 from dataclasses import dataclass, field
 
 import anthropic
@@ -27,8 +28,14 @@ client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
 TOOLS = [
     {
         "name": "run",
-        "description": "Run a shell command in the analysis sandbox; returns "
-                       "combined stdout+stderr (truncated).",
+        "description": "Run ONE shell command line in the analysis sandbox and "
+                       "get back combined stdout+stderr plus the process exit "
+                       "code ('[exit code: N]'). The shell is Windows cmd.exe: "
+                       "pass a single line (chain steps with & or &&); multi-line "
+                       "scripts and heredocs do NOT work. A crash / access "
+                       "violation in a launched program shows up as a large "
+                       "negative exit code (e.g. -1073741819 = 0xC0000005), not "
+                       "as text output.",
         "input_schema": {
             "type": "object",
             "properties": {"cmd": {"type": "string"}},
@@ -73,17 +80,26 @@ def _run_shell(cmd: str) -> str:
     try:
         out = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                              timeout=config.TOOL_TIMEOUT, cwd=config.SANDBOX_DIR)
-        return (out.stdout + out.stderr)[:8000]  # truncate to protect context
+        body = (out.stdout + out.stderr)[:8000]  # truncate to protect context
+        # Surface the EXIT CODE — a crashing target (access violation) produces no
+        # stdout, so the only observable signal is the return code, e.g.
+        # -1073741819 == 0xC0000005 (access violation). Without this the agent is
+        # blind to crashes it triggers.
+        return f"{body}\n[exit code: {out.returncode}]"
     except subprocess.TimeoutExpired:
         return f"[timeout after {config.TOOL_TIMEOUT}s]"
 
 
-def _dispatch(name: str, inp: dict, expected_sig: str | None) -> str:
+def _dispatch(name: str, inp: dict, expected_sig: str | None,
+              record_ttd: bool = True) -> str:
     """Tool dispatch. THIS is the swap point for your toolchain."""
     if name == "run":
         return _run_shell(inp["cmd"])
     if name == "submit_finding":
-        verdict = verify_finding(inp, expected_sig=expected_sig)
+        # record_ttd=False for the stack fixture (fast, symbol-free, no admin);
+        # True re-enables the TTD reached_sink leg for heap/UAF targets.
+        verdict = verify_finding(inp, expected_sig=expected_sig,
+                                 record_ttd=record_ttd)
         return str(verdict)
     return f"unknown tool: {name}"
 
@@ -99,7 +115,7 @@ class AgentRun:
 
 
 def run_agent(task_prompt: str, seed: int = 0, expected_sig: str | None = None,
-              max_steps: int = 40) -> AgentRun:
+              max_steps: int = 40, record_ttd: bool = True) -> AgentRun:
     """Drive one trajectory.
 
     NOTE on `seed`: the Messages API does not guarantee bit-for-bit determinism,
@@ -125,13 +141,15 @@ def run_agent(task_prompt: str, seed: int = 0, expected_sig: str | None = None,
         results = []
         for block in resp.content:
             if block.type == "tool_use":
-                output = _dispatch(block.name, block.input, expected_sig)
+                output = _dispatch(block.name, block.input, expected_sig,
+                                   record_ttd=record_ttd)
                 if block.name == "submit_finding":
-                    # capture the structured verdict for scoring
+                    # capture the structured verdict for scoring. ast.literal_eval
+                    # (not eval) — the verdict is our own repr'd dict of literals.
                     try:
-                        run.last_verdict = eval(output)  # verdict is a repr'd dict
-                    except Exception:
-                        run.last_verdict = {"crashed": "crashed" in output}
+                        run.last_verdict = ast.literal_eval(output)
+                    except (ValueError, SyntaxError):
+                        run.last_verdict = {"crashed": "'crashed': True" in output}
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,

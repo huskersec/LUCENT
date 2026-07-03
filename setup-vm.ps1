@@ -264,6 +264,6 @@ if ($allOk) {
 Write-Host ""
 Write-Host ">> The current baseline is the STACK-overflow fixture (vuln.exe); it does NOT need page heap." -ForegroundColor Yellow
 Write-Host ">> To finish the golden image:" -ForegroundColor Yellow
-Write-Host "     1. Build the fixture: run m2\build.bat (it self-forces the x64 toolchain) => vuln.exe + vuln.pdb in C:\lucent\sandbox." -ForegroundColor Yellow
-Write-Host "     2. Sanity-check locally: python m2\verify_oracle.py  (expect crash-64A crashed=True, clean-8A crashed=False)." -ForegroundColor Yellow
+Write-Host "     1. Build the fixture: run bench\build.bat (it self-forces the x64 toolchain) => vuln.exe + vuln.pdb in C:\lucent\sandbox." -ForegroundColor Yellow
+Write-Host "     2. Sanity-check locally: python bench\verify_oracle.py  (expect crash-64A crashed=True, clean-8A crashed=False)." -ForegroundColor Yellow
 Write-Host "     3. Take the vCenter snapshot and name it 'golden' - that snapshot is what the harness reverts to before each trial." -ForegroundColor Yellow

@@ -8,10 +8,13 @@ here, so this is the one file you touch when the lab layout changes.
 import os
 
 # --- Model ---
-# Sonnet over long multi-step trajectories (cost); switch to an Opus-tier model
-# for the hard reasoning experiments and compare.
-MODEL = os.environ.get("LUCENT_MODEL", "claude-sonnet-4-6")
-MAX_TOKENS = 4096
+# Sonnet tier for long multi-step trajectories (cost); switch to Opus-tier
+# (LUCENT_MODEL=claude-opus-4-8) for the hard-reasoning experiments and compare.
+# claude-sonnet-5 runs ADAPTIVE THINKING by default; agent.py echoes each
+# response's full content (thinking blocks included) back unchanged, which is
+# required for same-model continuation — don't strip it.
+MODEL = os.environ.get("LUCENT_MODEL", "claude-sonnet-5")
+MAX_TOKENS = 8192   # headroom for adaptive thinking + a tool_use block per turn
 
 # --- Sandbox ---
 # Working directory the agent's `run` tool executes inside. MUST be a disposable,

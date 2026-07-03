@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover - script-mode fallback
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_TARGET = _REPO_ROOT / "m2" / "target.exe"
+DEFAULT_TARGET = _REPO_ROOT / "bench" / "target.exe"
 DEFAULT_IMAGE_NAME = "target.exe"
 DEFAULT_SNAPSHOT = "golden"
 
@@ -144,7 +144,7 @@ def run_trial(
                       enabled for `image_name` and the toolchain installed
                       (see setup-vm.ps1).
         target_local: local path to the target binary to push (default
-                      m2/target.exe).
+                      bench/target.exe).
         input_local:  local path to the trigger input file. Required.
         sandbox_dir:  guest directory the binary + input land in and cdb runs
                       from (default config.SANDBOX_DIR = C:\\lucent\\sandbox).
@@ -286,7 +286,7 @@ if __name__ == "__main__":
     parser.add_argument("--snapshot", default=DEFAULT_SNAPSHOT,
                         help="golden snapshot name (default: golden)")
     parser.add_argument("--target", default=str(DEFAULT_TARGET),
-                        help="local path to target binary (default: m2/target.exe)")
+                        help="local path to target binary (default: bench/target.exe)")
     parser.add_argument("--input", default=None,
                         help="local path to trigger input "
                              "(default: generate a 128-byte input)")
@@ -298,7 +298,7 @@ if __name__ == "__main__":
                         help="record a TTD trace and triage the replay")
     args = parser.parse_args()
 
-    # Default to a >64-byte input (the overflow case for m2/target.c).
+    # Default to a >64-byte input (the overflow case for bench/target.c).
     input_path = (
         Path(args.input) if args.input
         else _make_default_input(Path("trials") / "_inputs", size=128)
