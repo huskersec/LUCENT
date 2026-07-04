@@ -52,19 +52,45 @@ def disable_page_heap(image_name: str) -> None:
                    capture_output=True, text=True)
 
 
+def _materialize_trigger(args: dict) -> str:
+    """Build the PoC input appended as the target's final arg.
+
+    Prefer the compact `trigger_repeat` spec ({"unit": "A", "count": N} -> unit*N)
+    so the AGENT never emits a long literal payload token-by-token — typing out
+    thousands of identical bytes eats its output budget and truncates its tool call
+    (stop_reason=max_tokens). Fall back to a literal `trigger_path`: a short payload
+    string or a path for a file-reading target. Raises ValueError if neither is
+    usable so verify_finding can return a clean error verdict instead of crashing."""
+    rep = args.get("trigger_repeat")
+    if rep is not None:
+        try:
+            count = int(rep["count"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"trigger_repeat needs an integer 'count': {rep!r}")
+        if count < 0:
+            raise ValueError(f"trigger_repeat 'count' must be >= 0: {count}")
+        unit = str(rep.get("unit", "A")) or "A"
+        return unit * count
+    path = args.get("trigger_path")
+    if path is None:
+        raise ValueError("no trigger: provide trigger_repeat or trigger_path")
+    return path
+
+
 def verify_finding(args: dict, expected_sig: str | None = None,
                    record_ttd: bool = True) -> dict:
     """Run the target on the agent's PoC under page heap and return a verdict.
 
     args = {
-        "target_cmd":   [exe, *fixed_args],   # how to launch the target
-        "trigger_path": <PoC input>,          # appended as the final arg. For an
-                                              # arg-consuming target (the stack
-                                              # fixture) this IS the payload
-                                              # string, e.g. "A"*64; for a
-                                              # file-reading target it is a path.
-        "image_name":   "vuln.exe",           # for page-heap enable/disable
-        "page_heap":    False,                # True only for HEAP-class bugs
+        "target_cmd":    [exe, *fixed_args],  # how to launch the target
+        "trigger_repeat": {"unit": "A",       # PREFERRED for long payloads: the
+                           "count": 5000},    # oracle expands unit*count. Keeps the
+                                              # agent from emitting the raw bytes.
+        "trigger_path":  <PoC input>,         # OR a literal: a SHORT payload string
+                                              # (e.g. "A"*64) or, for a file-reading
+                                              # target, a path. One of the two is required.
+        "image_name":    "vuln.exe",          # for page-heap enable/disable
+        "page_heap":     False,               # True only for HEAP-class bugs
     }
 
     expected_sig: the known crash signature (a substring of the !analyze
@@ -77,7 +103,16 @@ def verify_finding(args: dict, expected_sig: str | None = None,
     Returns a structured, unfakeable verdict dict (see _parse_verdict).
     """
     image = args["image_name"]
-    cmd = list(args["target_cmd"]) + [args["trigger_path"]]
+    try:
+        payload = _materialize_trigger(args)
+    except ValueError as e:
+        # Malformed / missing trigger — return a clean verdict, don't crash the loop.
+        return {"crashed": False, "error": str(e), "exception_code": None,
+                "av_type": None, "fault_address": None, "rip_controlled": False,
+                "bucket_id": None, "failure_bucket_id": None,
+                "matches_expected_bug": None, "ttd_trace": None,
+                "payload_len": None, "raw_len": 0}
+    cmd = list(args["target_cmd"]) + [payload]
     use_page_heap = bool(args.get("page_heap", False))
 
     # cdb script: catch the access violation, capture faulting context, stack,
@@ -156,7 +191,9 @@ def verify_finding(args: dict, expected_sig: str | None = None,
         print(f"\n===== RAW CDB OUTPUT ({len(out)} bytes) =====\n{out}\n"
               f"===== END RAW =====\n", flush=True)
 
-    return _parse_verdict(out, expected_sig, ttd_trace=ttd_dir)
+    verdict = _parse_verdict(out, expected_sig, ttd_trace=ttd_dir)
+    verdict["payload_len"] = len(payload)   # record what actually went to the target
+    return verdict
 
 
 def _run_cdb(cdb_args: list[str], script: str,

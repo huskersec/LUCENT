@@ -3,17 +3,26 @@
     LUCENT golden-image baker - run INSIDE the target Windows VM, elevated.
 
 .DESCRIPTION
-    Idempotently installs the LUCENT oracle toolchain (Debugging Tools for
-    Windows, VS 2022 C++ Build Tools, Python 3.11), configures the Microsoft
-    symbol path, pre-populates symbols, installs Python deps, and prints a
-    pass/fail probe table for the tools the oracle depends on.
+    Idempotently installs the LUCENT toolchain and bakes the golden image:
+      * M1/M2 oracle: Debugging Tools for Windows (cdb / gflags), VS 2022 C++
+        Build Tools (cl.exe), Python 3.11 + deps; the Microsoft symbol path +
+        pre-populated symbols; Full Page Heap pre-armed for vuln.exe (heap-class
+        variants only - the stack baseline ignores it).
+      * M3 tool layer: Adoptium Temurin JDK 21 (direct MSI, not winget), a
+        version-pinned Ghidra extracted under C:\tools (with GHIDRA_INSTALL_DIR
+        set), and ghidriff (pip) for binary patch-diffing.
+    Then prints a pass/fail probe table: M1/M2 tools are required (gate the
+    'golden' image); the M3 tool layer is informational.
 
-    Run from an ELEVATED PowerShell prompt. After it reports all-green, take the
-    vCenter snapshot that the harness reverts to.
+    Run from an ELEVATED PowerShell prompt. After the required probes are green,
+    take the vCenter snapshot the harness reverts to.
 
 .NOTES
-    Idempotent: re-running is safe. winget skips already-installed packages and
-    the symbol/env steps are convergent.
+    Idempotent: re-running is safe. winget / pip skip already-installed packages,
+    Ghidra + the JDK are version-pinned and skipped if already present, and the
+    symbol / env steps are convergent. Large downloads use BITS (fast, resumable).
+    Some tools (cl, python, java, ghidriff) land on PATH only in a FRESH shell
+    after install - re-run there to see them go green.
 #>
 
 #Requires -RunAsAdministrator
@@ -25,6 +34,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Invoke-WebRequest in Windows PowerShell 5.1 throttles large downloads to a crawl
+# while it renders a progress bar; silencing it is a 10-50x speedup. (Get-Download
+# below prefers BITS, which is faster still and resumable.)
+$ProgressPreference = 'SilentlyContinue'
 
 function Write-Section([string]$Text) {
     Write-Host ""
@@ -66,6 +79,22 @@ function Install-WingetPackage {
     }
     else {
         Write-Warning "  -> winget exit $code for $Id (continuing; probe table will confirm)."
+    }
+}
+
+# Helper: download a (large) file fast. BITS is much quicker than Invoke-WebRequest
+# for big files and resumes on drop; fall back to IWR (progress bar already off) if
+# the BITS service is unavailable.
+function Get-Download {
+    param(
+        [Parameter(Mandatory)] [string]$Uri,
+        [Parameter(Mandatory)] [string]$OutFile
+    )
+    try {
+        Start-BitsTransfer -Source $Uri -Destination $OutFile -ErrorAction Stop
+    } catch {
+        Write-Host "  (BITS unavailable: $($_.Exception.Message) - falling back to Invoke-WebRequest)" -ForegroundColor DarkGray
+        Invoke-WebRequest -Uri $Uri -OutFile $OutFile
     }
 }
 
@@ -167,6 +196,95 @@ if (Test-Path $req) {
 }
 
 # ---------------------------------------------------------------------------
+# 6b. M3 tool layer: JDK + Ghidra + ghidriff (binary patch-diffing).
+#     ghidriff runs Ghidra headless, so it needs a JDK and a Ghidra install with
+#     GHIDRA_INSTALL_DIR set. Required for M3 (the `diff` agent tool); NOT needed
+#     for the M1/M2 oracle. Idempotent.
+# ---------------------------------------------------------------------------
+Write-Section "M3 tool layer (JDK + Ghidra + ghidriff)"
+
+# Pinned Ghidra version + tools root (this VM installs tools under C:\tools).
+# Bump $GhidraVer to move versions; the release tag is Ghidra_<ver>_build.
+$ToolsRoot = 'C:\tools'
+$GhidraVer = '12.0.4'
+
+# JDK 21 (Ghidra 12.x requires JDK 21). Use Adoptium Temurin - the JDK Ghidra's
+# install docs link - via a direct pinned MSI (like Ghidra), NOT winget: the
+# winget Microsoft.OpenJDK package fails with an installer-hash mismatch. Bump
+# $JdkTag/$JdkMsi to move versions.
+$JdkTag = 'jdk-21.0.11+10'
+$JdkMsi = 'OpenJDK21U-jdk_x64_windows_hotspot_21.0.11_10.msi'
+$JdkUrl = "https://github.com/adoptium/temurin21-binaries/releases/download/$JdkTag/$JdkMsi"
+if (Get-Command java -ErrorAction SilentlyContinue) {
+    Write-Host "java already on PATH: $((Get-Command java).Source)" -ForegroundColor DarkGray
+} else {
+    try {
+        $msi = Join-Path $env:TEMP $JdkMsi
+        Write-Host "Downloading Temurin JDK ($JdkTag) ..."
+        Get-Download -Uri $JdkUrl -OutFile $msi
+        Write-Host "Installing $JdkMsi (silent) ..."
+        # FeatureEnvironment => add java to PATH; FeatureJavaHome => set JAVA_HOME.
+        $jp = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
+            '/i', "`"$msi`"", '/qn', '/norestart',
+            'ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJavaHome')
+        if ($jp.ExitCode -eq 0) { Write-Host "  -> Temurin JDK installed." -ForegroundColor Green }
+        else { Write-Warning "  -> msiexec exit $($jp.ExitCode) for the JDK." }
+        Remove-Item $msi -ErrorAction SilentlyContinue
+    } catch {
+        Write-Warning "Temurin JDK install failed: $($_.Exception.Message)"
+        Write-Warning "Install manually from adoptium.net (Temurin 21, Windows x64 MSI)."
+    }
+}
+
+# Ghidra: download the PINNED PUBLIC release (by release tag, so no build-date
+# guessing) and extract under C:\tools.  GHIDRA_INSTALL_DIR points at the extract.
+if (-not (Test-Path $ToolsRoot)) { New-Item -ItemType Directory -Path $ToolsRoot | Out-Null }
+$ghidraHome = $null
+$existing = Get-ChildItem -Path $ToolsRoot -Directory -Filter "ghidra_${GhidraVer}_PUBLIC" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($existing) {
+    $ghidraHome = $existing.FullName
+    Write-Host "Ghidra $GhidraVer already present: $ghidraHome" -ForegroundColor DarkGray
+} else {
+    try {
+        $tag = "Ghidra_${GhidraVer}_build"
+        Write-Host "Resolving Ghidra $GhidraVer (release tag $tag) from GitHub..."
+        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/tags/$tag" -Headers @{ 'User-Agent' = 'lucent-setup' }
+        $asset = $rel.assets | Where-Object { $_.name -like "ghidra_${GhidraVer}_PUBLIC_*.zip" } | Select-Object -First 1
+        if (-not $asset) { throw "no ghidra_${GhidraVer}_PUBLIC_*.zip asset under tag $tag" }
+        $zip = Join-Path $env:TEMP $asset.name
+        Write-Host "Downloading $($asset.name) (this is large) ..."
+        Get-Download -Uri $asset.browser_download_url -OutFile $zip
+        Write-Host "Extracting to $ToolsRoot ..."
+        Expand-Archive -Path $zip -DestinationPath $ToolsRoot -Force
+        Remove-Item $zip -ErrorAction SilentlyContinue
+        $existing = Get-ChildItem -Path $ToolsRoot -Directory -Filter "ghidra_${GhidraVer}_PUBLIC" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($existing) { $ghidraHome = $existing.FullName }
+    } catch {
+        Write-Warning "Ghidra $GhidraVer install failed: $($_.Exception.Message)"
+        Write-Warning "Install manually: download ghidra_${GhidraVer}_PUBLIC from github.com/NationalSecurityAgency/ghidra/releases, extract to $ToolsRoot, then set GHIDRA_INSTALL_DIR."
+    }
+}
+if ($ghidraHome) {
+    [Environment]::SetEnvironmentVariable('GHIDRA_INSTALL_DIR', $ghidraHome, 'Machine')
+    $env:GHIDRA_INSTALL_DIR = $ghidraHome
+    Write-Host "GHIDRA_INSTALL_DIR = $ghidraHome" -ForegroundColor Green
+}
+
+# ghidriff (pip; a Python package - it does NOT live under C:\tools like Ghidra
+# does; its console script lands in Python's Scripts dir). It uses PyGhidra, which
+# reads GHIDRA_INSTALL_DIR at RUN time. Latest ghidriff is the version most likely
+# to support a NEW Ghidra (12.x); if the diff step errors with a Ghidra API
+# mismatch, pin ghidriff to a release that lists Ghidra 12 support (or drop Ghidra
+# to ghidriff's tested version).
+$pyForGh = (Get-Command python -ErrorAction SilentlyContinue).Source
+if ($pyForGh) {
+    Write-Host "pip install --upgrade ghidriff (latest)"
+    & $pyForGh -m pip install --upgrade ghidriff
+} else {
+    Write-Warning "python not on PATH yet; skipping 'pip install ghidriff' (re-run in a fresh shell)."
+}
+
+# ---------------------------------------------------------------------------
 # 7. Probe table - pass/fail for each required tool, searching standard
 #    install locations. This is the authoritative 'is the golden image ready?'
 #    check.
@@ -209,6 +327,26 @@ $probes | ForEach-Object {
     if (-not $ok) { $allOk = $false }
     $status = if ($ok) { 'PASS' } else { 'FAIL' }
     $color  = if ($ok) { 'Green' } else { 'Red' }
+    $shown  = if ($_.Path) { $_.Path } else { '(not found)' }
+    Write-Host ("  {0,-13} {1,-4}  {2}" -f $_.Tool, $status, $shown) -ForegroundColor $color
+}
+
+# M3 tool-layer probes - informational; NOT part of the M1/M2 golden bar, so a
+# FAIL here (often just PATH lag in this session) does not flip $allOk. ghidriff
+# and java land on PATH only in a fresh shell after install.
+$java = (Get-Command java -ErrorAction SilentlyContinue).Source
+$ghidraHeadless = if ($env:GHIDRA_INSTALL_DIR) { Join-Path $env:GHIDRA_INSTALL_DIR 'support\analyzeHeadless.bat' } else { $null }
+$ghidriff = (Get-Command ghidriff -ErrorAction SilentlyContinue).Source
+$m3probes = @(
+    [pscustomobject]@{ Tool = 'java';     Path = $java },
+    [pscustomobject]@{ Tool = 'ghidra';   Path = $ghidraHeadless },
+    [pscustomobject]@{ Tool = 'ghidriff'; Path = $ghidriff }
+)
+Write-Host "  -- M3 tool layer (needed for M3, not M1/M2) --" -ForegroundColor DarkGray
+$m3probes | ForEach-Object {
+    $ok = [bool]$_.Path -and (Test-Path $_.Path)
+    $status = if ($ok) { 'PASS' } else { 'FAIL' }
+    $color  = if ($ok) { 'Green' } else { 'Yellow' }
     $shown  = if ($_.Path) { $_.Path } else { '(not found)' }
     Write-Host ("  {0,-13} {1,-4}  {2}" -f $_.Tool, $status, $shown) -ForegroundColor $color
 }

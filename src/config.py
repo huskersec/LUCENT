@@ -14,7 +14,21 @@ import os
 # response's full content (thinking blocks included) back unchanged, which is
 # required for same-model continuation — don't strip it.
 MODEL = os.environ.get("LUCENT_MODEL", "claude-sonnet-5")
-MAX_TOKENS = 8192   # headroom for adaptive thinking + a tool_use block per turn
+# Per-turn output cap. Must fit adaptive-thinking tokens + a text preamble + the
+# full tool_use block. 8192 was too tight: a verbose submit_finding `summary`
+# blew the cap and TRUNCATED the tool call mid-JSON (stop_reason=max_tokens,
+# missing required args), which the loop then misread as "agent never submitted".
+# See agent.py's max_tokens handling and submit_finding's "keep summary short".
+MAX_TOKENS = int(os.environ.get("LUCENT_MAX_TOKENS", "16384"))
+
+# Prompt caching: the Messages API is stateless, so every turn resends system +
+# tools + the whole growing message history — and in these trajectories the big
+# repeated chunk is the `diff` tool result. Caching the stable prefix + rolling one
+# breakpoint to the end of the conversation each turn lets later turns READ that
+# prefix at ~0.1x instead of re-billing it. Set LUCENT_PROMPT_CACHE=0 to A/B the
+# cost (cache reads/writes are reported per run). 5-min ephemeral cache (GA, no beta
+# header); the slow `diff` runs once up front, so the fast later turns stay in-window.
+PROMPT_CACHE = os.environ.get("LUCENT_PROMPT_CACHE", "1") != "0"
 
 # --- Sandbox ---
 # Working directory the agent's `run` tool executes inside. MUST be a disposable,
@@ -40,6 +54,9 @@ TOOL_TIMEOUT = 120        # per agent `run` tool call
 # Microsoft server; bump this (e.g. LUCENT_ORACLE_TIMEOUT=600) for a cold cache,
 # then drop back once C:\Symbols is warm.
 ORACLE_TIMEOUT = int(os.environ.get("LUCENT_ORACLE_TIMEOUT", "180"))
+# Per ghidriff `diff` tool call. Ghidra headless analysis of TWO binaries from a
+# cold project is slow (first run can be minutes); generous by default.
+GHIDRIFF_TIMEOUT = int(os.environ.get("LUCENT_GHIDRIFF_TIMEOUT", "600"))
 
 # --- Eval bookkeeping ---
 RUNS_LOG = os.environ.get("LUCENT_RUNS_LOG", "runs.jsonl")
