@@ -20,12 +20,13 @@ Supporting modules: `src/ttd.py` (Time Travel Debugging replay seam for progress
 
 The agent now runs the full thesis on a known patch pair: it binary-diffs a pre-patch vs. patched build, localizes the security-relevant change, reasons backward to the bug, produces a proof-of-crash input, and the oracle independently confirms the access violation in the pre-patch binary.
 
+- **M1 (agent loop closes): ✅** — the ReAct loop drives a target autonomously end-to-end: `bench/run_agent_smoke.py` had the agent map the attack surface, form a memory-safety hypothesis, deliver a crashing `argv`, and call `submit_finding` → oracle verdict, all in one trajectory (`agent_trajectory.txt`). Proves the loop + tool dispatch + oracle handshake before any patch-diffing.
 - **M2 (hard oracle): ✅** — proven against the stack-overflow baseline `bench/vuln.c` (a 16-byte stack buffer + unbounded `strcpy`, vendored from the Bug Museum) → `vuln.exe`. A long-enough argv overwrites the saved return address and the `ret` faults with an access violation the oracle catches and classifies, **zero false positives/negatives** on known crash-vs-clean inputs. The `/GS`-cookie variant (`STATUS_STACK_BUFFER_OVERRUN` fail-fast) and the `!analyze` bucket-identity check are also verified.
 - **M3a (patch-diff tool + loop): ✅** — `diff(old,new)` (ghidriff / Ghidra headless) is wired as a dedicated tool; `bench/run_agent_m3.py` drives the diff → reason → PoC → verdict trajectory on the `vuln.exe` / `patched.exe` pair (`strcpy` → `strncpy`+bound). Verified end-to-end: the agent reads the diff, derives and *scales* the payload to the buffer size, and the oracle returns `crashed=True`.
 
 A **derivation probe** (a `BUFSZ=4096` build variant, `vuln_big.exe`) confirms the agent reasons from the diff rather than pattern-matching a canonical length: a 200-byte "default" payload can't overflow a 4096-byte buffer, and the agent correctly read the buffer size and scaled its PoC to 5000 — oracle-confirmed.
 
-Open next: **M3b** (the MCP-backed interactive tool layer — GhidraMCP + WinDbg-MCP), the TTD `reached_sink` progress rung, and **M4** (the first *uncontaminated* capability measurement on a freshly patch-diffed target). See `FRT-Lab-Milestone-Tracker.md` for the milestone ladder and `docs/M2-runbook.md` for the in-VM procedure.
+Open next: **M3b** (the MCP-backed interactive tool layer — GhidraMCP + WinDbg-MCP), the TTD `reached_sink` progress rung, and **M4** (the first *uncontaminated* capability measurement on a freshly patch-diffed target). See `FRT-Lab-Milestone-Tracker.md` for the milestone ladder and the per-milestone runbooks in `docs/` (`M1-runbook.md`, `M2-runbook.md`, `M3a-runbook.md`) for the in-VM procedures.
 
 ## Initial testing
 
@@ -82,6 +83,6 @@ bench/        in-VM fixture + verification/agent kit:
               build.bat (modes: default · gs · patched · big · bigpatched), archcheck.py,
               verify_oracle.py (oracle check), diag.py (diagnostic),
               run_agent_smoke.py (M1 agent-loop smoke), run_agent_m3.py (M3a patch-diff trajectory)
-docs/         M2-runbook.md
+docs/         M1-runbook.md (agent loop) · M2-runbook.md (oracle) · M3a-runbook.md (patch-diff floor)
 setup-vm.ps1  golden-image toolchain bootstrap (run elevated, in the VM): MSVC + WinDbg + JDK + Ghidra + ghidriff
 ```
